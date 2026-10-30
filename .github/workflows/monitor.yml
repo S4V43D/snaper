@@ -1,0 +1,104 @@
+name: Section monitor
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'check, dry-run (no email/state), test-email, or reset-baseline'
+        type: choice
+        default: check
+        options:
+          - check
+          - dry-run
+          - test-email
+          - reset-baseline
+
+permissions:
+  contents: write
+
+concurrency:
+  group: single-page-section-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out trusted default-branch code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run offline tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Restore durable state branch
+        if: ${{ inputs.mode != 'test-email' }}
+        env:
+          MODE: ${{ inputs.mode || 'check' }}
+        run: |
+          set -euo pipefail
+          state_ref='refs/heads/monitor-state'
+          if git ls-remote --exit-code --heads origin "$state_ref" > /dev/null; then
+            git fetch --no-tags origin "$state_ref"
+            git worktree add --detach .monitor-state FETCH_HEAD
+            if [[ ! -f .monitor-state/state.json && "$MODE" != 'reset-baseline' ]]; then
+              echo 'State branch exists but state.json is missing. Review before resetting.' >&2
+              exit 1
+            fi
+          else
+            status=$?
+            if [[ "$status" -ne 2 ]]; then
+              echo 'Could not inspect remote state; refusing to assume a new baseline.' >&2
+              exit "$status"
+            fi
+            git worktree add --detach .monitor-state HEAD
+            git -C .monitor-state switch --orphan monitor-state
+          fi
+
+      - name: Check section or run chosen setup action
+        env:
+          GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+          MONITOR_URL: ${{ vars.MONITOR_URL }}
+          MONITOR_SELECTOR: ${{ vars.MONITOR_SELECTOR }}
+          MODE: ${{ inputs.mode || 'check' }}
+        run: |
+          set -euo pipefail
+          args=(--state .monitor-state/state.json)
+          case "$MODE" in
+            check) ;;
+            dry-run) args+=(--dry-run) ;;
+            test-email) args+=(--test-email) ;;
+            reset-baseline) args+=(--reset-baseline) ;;
+            *) echo 'Invalid mode' >&2; exit 1 ;;
+          esac
+          python monitor.py "${args[@]}"
+
+      - name: Save changed state
+        if: ${{ success() && (inputs.mode == '' || inputs.mode == 'check' || inputs.mode == 'reset-baseline') }}
+        run: |
+          set -euo pipefail
+          git -C .monitor-state config user.name 'github-actions[bot]'
+          git -C .monitor-state config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C .monitor-state add -- state.json
+          if ! git -C .monitor-state diff --cached --quiet; then
+            git -C .monitor-state commit -m 'Update section monitor state'
+            state_commit=$(git -C .monitor-state rev-parse HEAD)
+            git push origin "$state_commit:refs/heads/monitor-state"
+          fi
