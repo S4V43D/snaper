@@ -1,6 +1,6 @@
 {
-  "url": "https://example.com/",
-  "selector": "h1",
-  "ignore_selectors": [],
-  "access_permission_confirmed": false
+    "url": "https://www.snussie.com/en/099-deals/",
+    "selector": "main",
+    "ignore_selectors": [],
+    "access_permission_confirmed": true
 }
