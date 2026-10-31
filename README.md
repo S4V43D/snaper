@@ -6,7 +6,7 @@ A small Python project that checks the text of one CSS-selected section on one p
 
 - First successful check: save a baseline, without a change email.
 - Later checks: compare normalized text; unchanged content produces no email and no state commit.
-- Changed text: send a plain-text Gmail email with before/after excerpts, then save the new baseline.
+- Changed text: send a plain-text Gmail email listing only REMOVED and ADDED word spans, then save the new baseline. Unchanged text is omitted; a text edit appears in both lists. A list with no changes says `(none)`. Moved text can also appear as removed and added.
 - Download, access, selector, or email errors: fail the run and keep the previous baseline.
 - GitHub stores snapshots on the separate `monitor-state` branch, so runner cleanup and cache expiration do not erase state. No personal access token is required.
 
@@ -132,7 +132,7 @@ State advances only after Gmail accepts a change message. If SMTP fails, the nex
 
 Email and GitHub commits are not one transaction. If Gmail accepts a message but the connection drops, the state write fails, or the state commit cannot be pushed, a future run can send a duplicate. This project favors retrying over silently marking an undelivered alert as handled; it does not promise exactly-once delivery. A changed page that reverts during an outage may never generate an alert.
 
-Snapshot updates use an atomic local file replacement. GitHub state commits happen only for a new baseline or changed content. Branch history retains older snapshots; a highly changeable section creates a growing history. Emails include at most 6,000 characters per before/after excerpt; comparison uses the full selected text, up to 100,000 characters.
+Snapshot updates use an atomic local file replacement. GitHub state commits happen only for a new baseline or changed content. Branch history retains older snapshots; a highly changeable section creates a growing history. Emails include at most 6,000 characters of removed text and 6,000 characters of added text, with a notice if either list is truncated; comparison uses the full selected text, up to 100,000 characters. Changing only this email format does not require a baseline reset.
 
 ## Safety and access rules
 

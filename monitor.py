@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from difflib import SequenceMatcher
 import hashlib
 import ipaddress
 import json
@@ -214,6 +215,36 @@ def send_email(subject: str, body: str) -> None:
             raise MonitorError("SMTP rejected the recipient; state was not advanced.")
 
 
+def format_changes(before: str, after: str) -> str:
+    """Describe changed word spans only, using existing snapshots without rebaselining."""
+    old_words, new_words = before.split(), after.split()
+    # Strip shared edges first: even a tiny edit in a long repeated page stays small.
+    start = 0
+    while start < min(len(old_words), len(new_words)) and old_words[start] == new_words[start]:
+        start += 1
+    old_end, new_end = len(old_words), len(new_words)
+    while old_end > start and new_end > start and old_words[old_end - 1] == new_words[new_end - 1]:
+        old_end -= 1
+        new_end -= 1
+    old_words, new_words = old_words[start:old_end], new_words[start:new_end]
+    removed, added = [], []
+    # Repeated words remain valid anchors; the default autojunk filter would hide them.
+    matcher = SequenceMatcher(None, old_words, new_words, autojunk=False)
+    for operation, old_start, old_stop, new_start, new_stop in matcher.get_opcodes():
+        if operation in ("delete", "replace"):
+            removed.append(" ".join(old_words[old_start:old_stop]))
+        if operation in ("insert", "replace"):
+            added.append(" ".join(new_words[new_start:new_stop]))
+
+    def section(label: str, spans: list[str]) -> str:
+        content = "\n".join(f"- {span}" for span in spans) if spans else "(none)"
+        if len(content) > 6000:
+            content = content[:6000] + "\n[More changed text omitted; visit the page to review it.]"
+        return f"{label}\n{content}"
+
+    return section("REMOVED", removed) + "\n\n" + section("ADDED", added)
+
+
 def run(config: dict, path: Path, *, dry_run: bool = False, reset: bool = False) -> str:
     if config.get("access_permission_confirmed") is not True:
         raise MonitorError("Review README access rules, then set access_permission_confirmed to true.")
@@ -229,13 +260,12 @@ def run(config: dict, path: Path, *, dry_run: bool = False, reset: bool = False)
     if outcome == "unchanged":
         return "Unchanged; no email or state write."
     if outcome == "changed":
-        def excerpt(value: str) -> str:
-            return value if len(value) <= 6000 else value[:6000] + "\n[excerpt truncated]"
         send_email("[Section monitor] Page section changed",
                    f"URL: {config['url']}\nCSS selector: {config['selector']}\n"
                    f"Observed (UTC): {datetime.now(timezone.utc).isoformat()}\n\n"
-                   f"BEFORE\n{excerpt(previous['text'])}\n\nAFTER\n{excerpt(current)}\n\n"
-                   "Plain-text comparison. Visit the page to review the complete section.\n")
+                   f"{format_changes(previous['text'], current)}\n\n"
+                   "Only changed text is listed. Edits show the old words as removed and the new words as added.\n"
+                   "Moved text may also appear as removed and added.\n")
     # Commit the observation only after SMTP accepts the message (if needed).
     save_state(path, config, current)
     return "Baseline saved; no email sent." if outcome == "baseline" else "Change email accepted by SMTP; state saved."

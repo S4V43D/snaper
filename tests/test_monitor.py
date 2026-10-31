@@ -52,8 +52,10 @@ class StateTests(unittest.TestCase):
         self.fetch.return_value = "Office opens Tuesday"
         self.assertIn("Change email accepted", self.baseline())
         self.assertEqual(monitor.load_state(self.path)["text"], "Office opens Tuesday")
-        self.assertIn("Office opens Monday", self.mail.call_args.args[1])
-        self.assertIn("Office opens Tuesday", self.mail.call_args.args[1])
+        body = self.mail.call_args.args[1]
+        self.assertIn("REMOVED\n- Monday", body)
+        self.assertIn("ADDED\n- Tuesday", body)
+        self.assertNotIn("Office opens", body)
         self.baseline()
         self.mail.assert_called_once()
 
@@ -205,6 +207,40 @@ class AccessTests(unittest.TestCase):
         response.iter_content.return_value = [b"x" * (monitor.MAX_BYTES + 1)]
         with self.assertRaisesRegex(monitor.MonitorError, "size or time"):
             monitor.get_resource(session, CONFIG["url"])
+
+
+class ChangeSummaryTests(unittest.TestCase):
+    def test_only_new_text(self):
+        self.assertEqual(monitor.format_changes("Library open", "Library now open"),
+                         "REMOVED\n(none)\n\nADDED\n- now")
+
+    def test_only_removed_text(self):
+        self.assertEqual(monitor.format_changes("Library now open", "Library open"),
+                         "REMOVED\n- now\n\nADDED\n(none)")
+
+    def test_replacement_keeps_unicode_and_punctuation(self):
+        self.assertEqual(monitor.format_changes("Hours: Monday 9–5.", "Hours: Tuesday 10–6."),
+                         "REMOVED\n- Monday 9–5.\n\nADDED\n- Tuesday 10–6.")
+
+    def test_distant_edits_do_not_include_unchanged_text(self):
+        self.assertEqual(monitor.format_changes("Old headline stays here old footer",
+                                               "New headline stays here new footer"),
+                         "REMOVED\n- Old\n- old\n\nADDED\n- New\n- new")
+
+    def test_repeated_text_remains_excluded(self):
+        common = "same " * 500
+        self.assertEqual(monitor.format_changes(common + "old " + common + "end",
+                                               common + "new " + common + "finish"),
+                         "REMOVED\n- old\n- end\n\nADDED\n- new\n- finish")
+
+    def test_identical_text_has_no_changes(self):
+        self.assertEqual(monitor.format_changes("Library open", "Library open"),
+                         "REMOVED\n(none)\n\nADDED\n(none)")
+
+    def test_large_change_is_capped_and_marked(self):
+        summary = monitor.format_changes("old", "x" * 7000)
+        self.assertIn("More changed text omitted", summary)
+        self.assertLess(len(summary), 6200)
 
 
 class EmailTests(unittest.TestCase):
